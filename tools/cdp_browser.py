@@ -459,6 +459,46 @@ class CDPBrowserManager:
             force: Whether to force cleanup browser process (ignoring AUTO_CLOSE_BROWSER config)
         """
         try:
+            # ------------------------------------------------------------------
+            # 关键步骤（在断开连接之前）：触发浏览器优雅退出以 flush 登录态。
+            #
+            # Chrome/Edge 的 cookie 是内存态，只有走正常退出流程（Browser.close /
+            # 收到 WM_CLOSE）才会写回 Default\Network\Cookies。如果直接断开 CDP 并
+            # 强杀进程，本次登录的 cookie 会丢失，导致下次启动 pong() 判定未登录、
+            # 用户被迫重新扫码。
+            #
+            # 这里在彻底断开前，通过 CDP 主动请求浏览器关闭。即使失败也无妨，
+            # 后续 launcher.cleanup() 会优雅 taskkill 兜底。
+            # ------------------------------------------------------------------
+            if self.browser is not None and self.browser.is_connected():
+                try:
+                    if config.CDP_CONNECT_EXISTING:
+                        # 连接的是用户已有浏览器，不能替用户关掉
+                        utils.logger.info(
+                            "[CDPBrowserManager] Connected to existing browser, "
+                            "skip graceful browser close"
+                        )
+                    elif force or config.AUTO_CLOSE_BROWSER:
+                        # 主动请求浏览器关闭：这是触发 cookie 落盘的关键
+                        try:
+                            cdp_session = await self.browser.new_browser_cdp_session()
+                            await cdp_session.send("Browser.close")
+                            utils.logger.info(
+                                "[CDPBrowserManager] Sent Browser.close via CDP "
+                                "(login state flushed)"
+                            )
+                            # 给浏览器一点时间完成退出与落盘
+                            await asyncio.sleep(1.5)
+                        except Exception as close_err:
+                            utils.logger.warning(
+                                f"[CDPBrowserManager] Graceful Browser.close failed, "
+                                f"falling back to process cleanup: {close_err}"
+                            )
+                except Exception as graceful_err:
+                    utils.logger.debug(
+                        f"[CDPBrowserManager] Graceful close attempt error: {graceful_err}"
+                    )
+
             # Close browser context
             if self.browser_context:
                 try:

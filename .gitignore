@@ -184,3 +184,13 @@ debug_tools
 
 database/*.db
 .omx/
+
+# 打包产物与工作目录（体积大，不入库）
+build_*/
+dist_*/
+
+# 浏览器登录态目录（本地临时）
+cdp_*_user_data_dir/
+
+# 源码备份文件
+*.py.bak

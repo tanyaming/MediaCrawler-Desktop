@@ -57,7 +57,20 @@ class DouYinLogin(AbstractLogin):
         """
 
         # popup login dialog
+        # 先看是否已经处于登录态（例如复用本地 user-data-dir 且 cookie 仍在有效期）。
+        # 已登录时直接跳过弹窗 + 扫码流程，避免每次启动都强制重新登录。
+        if await self._is_already_logged_in():
+            utils.logger.info(
+                "[DouYinLogin.begin] 检测到已是登录态，跳过扫码登录流程"
+            )
+            return
+
+        # 抖音页面加载后可能有一个“点击登录/关注”的浮层遮住右上角登录按钮。
+        # 这里先尝试把它关掉，否则后续点击“登录”按钮会被浮层拦截而失败。
+        await self._dismiss_overlays()
+
         await self.popup_login_dialog()
+        await self._dismiss_overlays()
 
         # select login type
         if config.LOGIN_TYPE == "qrcode":
@@ -108,26 +121,211 @@ class DouYinLogin(AbstractLogin):
 
         return False
 
-    async def popup_login_dialog(self):
-        """If the login dialog box does not pop up automatically, we will manually click the login button"""
-        dialog_selector = "xpath=//div[@id='login-panel-new']"
+    async def _is_already_logged_in(self) -> bool:
+        """判断当前浏览器上下文是否已是登录态。
+
+        依据：localStorage.HasUserLogin == '1' 或 cookie.LOGIN_STATUS == '1'。
+        任一命中即认为已登录（与 check_login_state 的判定口径保持一致），
+        此时无需重新扫码。
+        """
         try:
-            # check dialog box is auto popup and wait for 10 seconds
-            await self.context_page.wait_for_selector(dialog_selector, timeout=1000 * 10)
+            current_cookie = await self.browser_context.cookies()
+            _, cookie_dict = utils.convert_cookies(current_cookie)
+            if cookie_dict.get("LOGIN_STATUS") == "1":
+                return True
         except Exception as e:
-            utils.logger.error(f"[DouYinLogin.popup_login_dialog] login dialog box does not pop up automatically, error: {e}")
-            utils.logger.info("[DouYinLogin.popup_login_dialog] login dialog box does not pop up automatically, we will manually click the login button")
-            login_button_ele = self.context_page.locator("xpath=//p[text() = '登录']")
-            await login_button_ele.click()
+            utils.logger.debug(f"[DouYinLogin._is_already_logged_in] read cookies failed: {e}")
+
+        for page in self.browser_context.pages:
+            try:
+                local_storage = await page.evaluate("() => window.localStorage")
+                if local_storage.get("HasUserLogin", "") == "1":
+                    return True
+            except Exception:
+                continue
+        return False
+
+    async def _dismiss_overlays(self) -> None:
+        """尝试关闭首页遮挡登录按钮的浮层（登录引导/下载 App 等）。
+
+        这些浮层会把右上角 pacing“登录”按钮盖住，导致点击被拦截。
+        这里用短超时尝试多个关闭按钮，失败不影响主流程。
+        """
+        close_selectors = [
+            "xpath=//div[@id='douyin-header-login-guide']//*[local-name()='svg']",
+            "xpath=//div[contains(@class,'login-guide')]//*[local-name()='svg']",
+            "xpath=//div[contains(@class,'guide-close')]",
+            "xpath=//*[contains(@class,'close-icon')]",
+            "xpath=//*[contains(@class,'close') and (self::span or self::div or self::i)]",
+        ]
+        for sel in close_selectors:
+            try:
+                loc = self.context_page.locator(sel).first
+                if await loc.count() == 0:
+                    continue
+                if not await loc.is_visible(timeout=300):
+                    continue
+                await loc.click(timeout=1000, force=True)
+                utils.logger.info(f"[DouYinLogin._dismiss_overlays] closed overlay via {sel}")
+                await asyncio.sleep(0.3)
+            except Exception:
+                continue
+
+    async def popup_login_dialog(self):
+        """If the login dialog box does not pop up automatically, we will manually click the login button.
+
+        健壮性改造（针对抖音改版）：
+        1. 登录弹窗可能不再使用旧的 id `login-panel-new`，也可能根本不自动弹出；
+        2. 首页右上角的“登录”按钮位于 <pace-island> 岛容器里，直接 click() 在元素被
+           遮罩/弹窗覆盖时会因 Playwright 的 actionability 检查（元素不可点击）一直等到
+           30s 超时，抛出 Locator.click: Timeout。
+        因此这里改为：多重选择器探测 + 多种点击兜底（普通 click -> force click -> JS click -> 坐标点击），
+        确保能弹出登录弹窗。
+        """
+        # 兼容新旧登录弹窗容器，只要其中一个可见即认为弹窗已出现
+        dialog_selectors = [
+            "xpath=//div[@id='login-panel-new']",
+            "xpath=//div[contains(@id, 'douyin_login_comp')]",
+            "xpath=//*[contains(@class, 'login-container')]",
+            "xpath=//article[contains(@class, 'web-login')]",
+        ]
+
+        async def _dialog_visible() -> bool:
+            for sel in dialog_selectors:
+                try:
+                    loc = self.context_page.locator(sel).first
+                    if await loc.count() > 0 and await loc.is_visible(timeout=500):
+                        return True
+                except Exception:
+                    continue
+            return False
+
+        # 先等最多 6 秒，看弹窗是否自动弹出
+        for _ in range(12):
+            if await _dialog_visible():
+                utils.logger.info("[DouYinLogin.popup_login_dialog] login dialog box popped up automatically")
+                return
             await asyncio.sleep(0.5)
+
+        utils.logger.info(
+            "[DouYinLogin.popup_login_dialog] login dialog box does not pop up automatically, "
+            "we will manually click the login button"
+        )
+
+        # “登录”按钮文案定位：优先精确匹配，其次模糊匹配
+        login_button_xpaths = [
+            "xpath=//p[normalize-space(text())='登录']",
+            "xpath=//span[normalize-space(text())='登录']",
+            "xpath=//button[normalize-space(.)='登录']",
+            "xpath=//div[normalize-space(text())='登录']",
+            "xpath=//*[normalize-space(text())='登录']",
+        ]
+
+        clicked = False
+        for xpath in login_button_xpaths:
+            try:
+                loc = self.context_page.locator(xpath).first
+                if await loc.count() == 0:
+                    continue
+                try:
+                    # 1) 常规点击（带短超时，避免卡 30s）
+                    await loc.click(timeout=3000)
+                    clicked = True
+                    utils.logger.info(
+                        f"[DouYinLogin.popup_login_dialog] clicked login button via {xpath}"
+                    )
+                    break
+                except Exception as click_err:
+                    utils.logger.info(
+                        f"[DouYinLogin.popup_login_dialog] normal click failed ({click_err}), "
+                        f"falling back to force click for {xpath}"
+                    )
+                    # 2) force 点击，跳过遮挡/可点击性检查
+                    try:
+                        await loc.click(timeout=3000, force=True)
+                        clicked = True
+                        utils.logger.info(
+                            f"[DouYinLogin.popup_login_dialog] force-clicked login button via {xpath}"
+                        )
+                        break
+                    except Exception as force_err:
+                        utils.logger.info(
+                            f"[DouYinLogin.popup_login_dialog] force click failed ({force_err}), "
+                            f"falling back to JS click for {xpath}"
+                        )
+                        # 3) JS 直接触发 click 事件
+                        try:
+                            await loc.evaluate("el => el.click()")
+                            clicked = True
+                            utils.logger.info(
+                                f"[DouYinLogin.popup_login_dialog] JS-clicked login button via {xpath}"
+                            )
+                            break
+                        except Exception as js_err:
+                            utils.logger.info(
+                                f"[DouYinLogin.popup_login_dialog] JS click failed: {js_err}"
+                            )
+                            continue
+            except Exception as e:
+                utils.logger.info(f"[DouYinLogin.popup_login_dialog] locate {xpath} failed: {e}")
+                continue
+
+        if not clicked:
+            utils.logger.error(
+                "[DouYinLogin.popup_login_dialog] failed to click login button with all strategies. "
+                "Please check the Douyin homepage manually."
+            )
+            return
+
+        # 等待弹窗出现（最多 8 秒）
+        for _ in range(16):
+            await asyncio.sleep(0.5)
+            if await _dialog_visible():
+                utils.logger.info("[DouYinLogin.popup_login_dialog] login dialog box appeared after click")
+                return
+        utils.logger.error(
+            "[DouYinLogin.popup_login_dialog] login dialog box still not visible after clicking login button"
+        )
 
     async def login_by_qrcode(self):
         utils.logger.info("[DouYinLogin.login_by_qrcode] Begin login douyin by qrcode...")
-        qrcode_img_selector = "xpath=//div[@id='animate_qrcode_container']//img"
-        base64_qrcode_img = await utils.find_login_qrcode(
-            self.context_page,
-            selector=qrcode_img_selector
-        )
+
+        # 抖音改版后二维码容器 id 可能变化，这里尝试多个候选选择器；
+        # 并先给弹窗一点渲染时间（二维码通常是异步加载出来的）。
+        qrcode_selectors = [
+            "xpath=//div[@id='animate_qrcode_container']//img",
+            "xpath=//div[contains(@id, 'qrcode')]//img",
+            "xpath=//div[contains(@class, 'qrcode')]//img",
+            "xpath=//img[contains(@class, 'qrcode')]",
+            "xpath=//div[@id='login-panel-new']//canvas",
+            "xpath=//div[contains(@class, 'login')]//canvas",
+        ]
+
+        base64_qrcode_img = None
+        for _ in range(10):  # 最多等 5 秒
+            for sel in qrcode_selectors:
+                try:
+                    base64_qrcode_img = await utils.find_login_qrcode(
+                        self.context_page, selector=sel
+                    )
+                except Exception:
+                    base64_qrcode_img = None
+                if base64_qrcode_img:
+                    utils.logger.info(
+                        f"[DouYinLogin.login_by_qrcode] found qrcode via selector: {sel}"
+                    )
+                    break
+            if base64_qrcode_img:
+                break
+            # 若弹窗还没出现或仍在“验证码登录” tab，尝试切回扫码 tab
+            try:
+                scan_tab = self.context_page.locator("xpath=//span[text()='扫码登录']").first
+                if await scan_tab.count() > 0:
+                    await scan_tab.click(timeout=1500)
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+
         if not base64_qrcode_img:
             utils.logger.info("[DouYinLogin.login_by_qrcode] login qrcode not found please confirm ...")
             sys.exit()

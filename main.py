@@ -122,6 +122,11 @@ async def main() -> None:
 
 async def async_cleanup() -> None:
     global crawler
+
+    # 先保存 Excel 数据（兼作“中途终止”时的兜底保存）
+    # ExcelStoreBase.flush_all() 幂等：flush 后会清空单例，重复调用无副作用
+    _flush_excel_if_needed()
+
     if crawler:
         if getattr(crawler, "cdp_manager", None):
             try:
@@ -145,17 +150,17 @@ async def async_cleanup() -> None:
 if __name__ == "__main__":
     from tools.app_runner import run
 
-    def _force_stop() -> None:
-        c = crawler
-        if not c:
-            return
-        cdp_manager = getattr(c, "cdp_manager", None)
-        launcher = getattr(cdp_manager, "launcher", None)
-        if not launcher:
-            return
-        try:
-            launcher.cleanup()
-        except Exception:
-            pass
+    # 说明：不再在首次中断时直接强杀浏览器进程。
+    #
+    # 原因：Chrome/Edge 的 cookie 是内存态，必须走正常退出流程才会写回
+    # Default\Network\Cookies。若在收到终止信号时立即 taskkill，浏览器会被
+    # 强杀，本次扫码登录的登录态无法落盘，导致下次启动又要重新扫码。
+    #
+    # 现在改为：交给 async_cleanup() -> cdp_manager.cleanup(force=True) 走
+    # 优雅关闭链路（先通过 CDP 触发 Browser.close，再优雅结束进程），
+    # 给足超时时间以确保 cookie 完成落盘。
+    def _noop_on_interrupt() -> None:
+        # 保留钩子占位：不在中断瞬间杀浏览器，让清理流程优雅执行
+        pass
 
-    run(main, async_cleanup, cleanup_timeout_seconds=15.0, on_first_interrupt=_force_stop)
+    run(main, async_cleanup, cleanup_timeout_seconds=30.0, on_first_interrupt=_noop_on_interrupt)

@@ -566,6 +566,15 @@ class XiaoHongShuClient(AbstractApiClient, ProxyRefreshMixin):
                             f"[XiaoHongShuClient.get_comments_all_sub_comments] Failed to get sub-comments for note_id: {note_id}, root_comment_id: {root_comment_id}, error: {e}. Skipping this comment's sub-comments."
                         )
                         break  # Break out of the sub-comment acquisition loop of the current comment and continue processing the next comment
+                    except RetryError as e:
+                        # request() 上的 @retry 重试耗尽后会抛出 RetryError（内部包裹的是
+                        # DataFetchError 等取数异常），而外层只捕获了 DataFetchError，
+                        # 导致这类“重试后仍未拿到子评论”的正常跳过场景被当成 Unexpected error。
+                        # 这里统一按“跳过该评论的子评论”处理，并降级为 WARNING 日志。
+                        utils.logger.warning(
+                            f"[XiaoHongShuClient.get_comments_all_sub_comments] Failed to get sub-comments after retries for note_id: {note_id}, root_comment_id: {root_comment_id}, error: {e}. Skipping this comment's sub-comments."
+                        )
+                        break
                     except Exception as e:
                         utils.logger.error(
                             f"[XiaoHongShuClient.get_comments_all_sub_comments] Unexpected error when getting sub-comments for note_id: {note_id}, root_comment_id: {root_comment_id}, error: {e}"
