@@ -256,12 +256,48 @@ class BrowserLauncher:
 
         try:
             if self.system == "Windows":
-                # First try normal termination
-                process.terminate()
+                # 关键：先“优雅关闭”，让 Chrome/Edge 有机会把内存中的 cookie
+                # flush 落盘（否则 TerminateProcess 强杀会导致登录态丢失，
+                # 下次启动 pong() 判定未登录又要重新扫码）。
+                #
+                # 做法：不带 /F 的 taskkill 会向窗口发送 WM_CLOSE，
+                # 浏览器收到后会走正常退出流程（flush cookie / 关闭 profile）后自行退出。
+                graceful_ok = False
                 try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    utils.logger.warning("[BrowserLauncher] Normal termination timeout, using taskkill to force kill")
+                    grace = subprocess.run(
+                        ["taskkill", "/PID", str(process.pid), "/T"],
+                        capture_output=True,
+                        check=False,
+                        encoding='utf-8',
+                        errors='ignore',
+                    )
+                    # taskkill 无 /F 时，若成功发送关闭请求会返回 0
+                    if grace.returncode == 0:
+                        try:
+                            process.wait(timeout=8)
+                            graceful_ok = True
+                            utils.logger.info(
+                                "[BrowserLauncher] Browser closed gracefully (cookie flushed)"
+                            )
+                        except subprocess.TimeoutExpired:
+                            utils.logger.warning(
+                                "[BrowserLauncher] Graceful close timeout, will force kill"
+                            )
+                    else:
+                        utils.logger.debug(
+                            f"[BrowserLauncher] Graceful taskkill returned {grace.returncode}: "
+                            f"{(grace.stderr or grace.stdout or '').strip()}"
+                        )
+                except Exception as grace_err:
+                    utils.logger.debug(
+                        f"[BrowserLauncher] Graceful close attempt failed: {grace_err}"
+                    )
+
+                if not graceful_ok and process.poll() is None:
+                    # 兜底：优雅关闭失败则强制结束
+                    utils.logger.warning(
+                        "[BrowserLauncher] Force killing browser process via taskkill /F"
+                    )
                     subprocess.run(
                         ["taskkill", "/F", "/T", "/PID", str(process.pid)],
                         capture_output=True,

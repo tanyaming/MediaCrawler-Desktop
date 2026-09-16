@@ -18,6 +18,7 @@
 
 import os
 import json
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -25,6 +26,31 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
 router = APIRouter(prefix="/data", tags=["data"])
+
+
+# ---------------------------------------------------------------------------
+# NaN / Infinity 清洗工具
+#
+# 背景：Excel 里经常带有空值的数值列（如 video_url 全空），pandas 读出来是
+# float64 的 NaN。FastAPI/Starlette 用标准 json.dumps(allow_nan=False) 序列化，
+# 遇到 NaN/Infinity 会直接报错：
+#   ValueError: Out of range float values are not JSON compliant
+#
+# 注意：df.where(pd.notnull(df), None) 并不可靠——当整列 dtype 为 float64 时，
+# 填入的 None 会被 pandas 重新转回 NaN。因此这里做一次递归清洗，把
+# NaN / +Inf / -Inf 一律转成 None（JSON null）。
+# ---------------------------------------------------------------------------
+def sanitize_json_value(value):
+    """递归将 NaN / Infinity 转为 None，保证可被标准 JSON 序列化。"""
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return value
+    if isinstance(value, dict):
+        return {k: sanitize_json_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [sanitize_json_value(v) for v in value]
+    return value
 
 # Data directory
 try:
@@ -72,7 +98,7 @@ async def list_data_files(platform: Optional[str] = None, file_type: Optional[st
         return {"files": []}
 
     files = []
-    supported_extensions = {".json", ".jsonl", ".csv", ".xlsx", ".xls"}
+    supported_extensions = {".xlsx", ".xls"}
 
     for root, dirs, filenames in os.walk(DATA_DIR):
         root_path = Path(root)
@@ -164,8 +190,11 @@ async def get_file_content(file_path: str, preview: bool = True, limit: int = 10
                 # Get total row count (only read first column to save memory)
                 df_count = pd.read_excel(full_path, usecols=[0])
                 total = len(df_count)
-                # Convert to list of dictionaries, handle NaN values
+                # Convert to list of dictionaries, then recursively sanitize
+                # NaN/Infinity -> None so the JSON response never breaks
+                # (json.dumps(allow_nan=False) rejects NaN/Infinity).
                 rows = df.where(pd.notnull(df), None).to_dict(orient='records')
+                rows = [sanitize_json_value(r) for r in rows]
                 return {
                     "data": rows,
                     "total": total,
@@ -223,7 +252,7 @@ async def get_data_stats():
         "by_type": {}
     }
 
-    supported_extensions = {".json", ".jsonl", ".csv", ".xlsx", ".xls"}
+    supported_extensions = {".xlsx", ".xls"}
 
     for root, dirs, filenames in os.walk(DATA_DIR):
         root_path = Path(root)

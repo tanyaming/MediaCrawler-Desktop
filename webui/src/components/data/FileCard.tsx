@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { FileJson, FileSpreadsheet, FileText, Download, Eye } from 'lucide-react'
+import { FileSpreadsheet, Download, Eye } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -13,30 +13,12 @@ interface FileCardProps {
   file: DataFile
 }
 
-const fileIcons: Record<string, typeof FileJson> = {
-  json: FileJson,
-  jsonl: FileJson,
-  csv: FileSpreadsheet,
+const fileIcons: Record<string, typeof FileSpreadsheet> = {
   xlsx: FileSpreadsheet,
   xls: FileSpreadsheet,
 }
 
 const fileStyles: Record<string, { icon: string; border: string; badge: string }> = {
-  json: {
-    icon: 'text-cyber-neon-yellow',
-    border: 'hover:border-cyber-neon-yellow/50',
-    badge: 'border-cyber-neon-yellow/30 bg-cyber-neon-yellow/10 text-cyber-neon-yellow'
-  },
-  jsonl: {
-    icon: 'text-cyber-neon-yellow',
-    border: 'hover:border-cyber-neon-yellow/50',
-    badge: 'border-cyber-neon-yellow/30 bg-cyber-neon-yellow/10 text-cyber-neon-yellow'
-  },
-  csv: {
-    icon: 'text-cyber-neon-green',
-    border: 'hover:border-cyber-neon-green/50',
-    badge: 'border-cyber-neon-green/30 bg-cyber-neon-green/10 text-cyber-neon-green'
-  },
   xlsx: {
     icon: 'text-cyber-neon-cyan',
     border: 'hover:border-cyber-neon-cyan/50',
@@ -53,15 +35,15 @@ export function FileCard({ file }: FileCardProps) {
   const { t } = useTranslation('data')
   const [previewOpen, setPreviewOpen] = useState(false)
 
-  const Icon = fileIcons[file.type] || FileText
+  const Icon = fileIcons[file.type] || FileSpreadsheet
   const styles = fileStyles[file.type] || {
     icon: 'text-cyber-text-muted',
     border: 'hover:border-cyber-neon-cyan/50',
     badge: 'border-cyber-border-DEFAULT bg-cyber-bg-tertiary text-cyber-text-secondary'
   }
 
-  // 检查是否支持预览
-  const isPreviewable = ['json', 'jsonl', 'csv', 'xlsx', 'xls'].includes(file.type.toLowerCase())
+  // 检查是否支持预览（仅 Excel）
+  const isPreviewable = ['xlsx', 'xls'].includes(file.type.toLowerCase())
 
   const handleDownload = () => {
     const url = dataApi.getDownloadUrl(file.path)

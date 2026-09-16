@@ -30,9 +30,41 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from .routers import crawler_router, data_router, websocket_router
+
+
+class SafeJSONResponse(JSONResponse):
+    """JSON 响应类：对 NaN / Infinity 做防御性处理。
+
+    背景：FastAPI 默认用 json.dumps(allow_nan=False) 序列化响应，只要响应体里
+    带有 NaN / Infinity（例如 pandas 读 Excel 时空数值列产生的 float('nan')），
+    就会报 “ValueError: Out of range float values are not JSON compliant” 并返回 500。
+
+    这里重写 render：先尝试标准序列化，失败则递归把非法的 float 转成 None 后再序列化，
+    从全局层面避免此类崩溃。
+    """
+
+    def render(self, content) -> bytes:
+        import math
+
+        def _sanitize(value):
+            if isinstance(value, float):
+                if math.isnan(value) or math.isinf(value):
+                    return None
+                return value
+            if isinstance(value, dict):
+                return {k: _sanitize(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [_sanitize(v) for v in value]
+            return value
+
+        try:
+            return super().render(content)
+        except ValueError:
+            safe_content = _sanitize(content)
+            return super().render(safe_content)
 
 # Project root directory (used for running subprocesses like uv run main.py)
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -50,7 +82,8 @@ except Exception:  # pragma: no cover
 app = FastAPI(
     title="MediaCrawler WebUI API",
     description="API for controlling MediaCrawler from WebUI",
-    version="1.0.0"
+    version="1.0.0",
+    default_response_class=SafeJSONResponse,
 )
 
 # Get webui static files directory
@@ -257,13 +290,7 @@ async def get_config_options():
             {"value": "creator", "label": "创作者主页"},
         ],
         "save_options": [
-            {"value": "jsonl", "label": "JSONL"},
-            {"value": "json", "label": "JSON"},
-            {"value": "csv", "label": "CSV"},
             {"value": "excel", "label": "Excel"},
-            {"value": "sqlite", "label": "SQLite"},
-            {"value": "db", "label": "MySQL"},
-            {"value": "mongodb", "label": "MongoDB"},
         ],
     }
 

@@ -56,7 +56,7 @@ const defaultConfig: CrawlerConfig = {
   start_page: 1,
   enable_comments: true,
   enable_sub_comments: false,
-  save_option: 'json',
+  save_option: 'excel',
   cookies: '',
   headless: false,
 }

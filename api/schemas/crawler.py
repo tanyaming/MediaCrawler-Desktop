@@ -51,12 +51,6 @@ class CrawlerTypeEnum(str, Enum):
 
 class SaveDataOptionEnum(str, Enum):
     """Data save option"""
-    CSV = "csv"
-    DB = "db"
-    JSON = "json"
-    JSONL = "jsonl"
-    SQLITE = "sqlite"
-    MONGODB = "mongodb"
     EXCEL = "excel"
 
 
@@ -71,7 +65,7 @@ class CrawlerStartRequest(BaseModel):
     start_page: int = 1
     enable_comments: bool = True
     enable_sub_comments: bool = False
-    save_option: SaveDataOptionEnum = SaveDataOptionEnum.JSONL
+    save_option: SaveDataOptionEnum = SaveDataOptionEnum.EXCEL
     cookies: str = ""
     headless: bool = False
     max_notes_count: Optional[int] = Field(default=None, ge=1, le=MAX_API_LIMIT_COUNT)
