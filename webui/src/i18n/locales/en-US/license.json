@@ -1,0 +1,14 @@
+{
+  "title": "Usage Notice",
+  "warning": "Please read the following before use",
+  "content": {
+    "line1": "Please comply with the target platform's terms of use and applicable laws",
+    "line2": "Please control crawl frequency to avoid impacting the target platform",
+    "line3": "By using this program, you agree to comply with applicable laws",
+    "line4": "Users bear full responsibility for any consequences of misuse"
+  },
+  "license": "View Usage Notes",
+  "github": "Learn More",
+  "confirm": "I understand and agree",
+  "decline": "Disagree, Exit"
+}
